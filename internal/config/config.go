@@ -1,10 +1,10 @@
 package config
 
 import (
-	"fmt"
-	"io/ioutil"
-
+	"github.com/skalibog/bfma/pkg/logger"
+	"go.uber.org/zap"
 	"gopkg.in/yaml.v2"
+	"io/ioutil"
 )
 
 // Config представляет полную конфигурацию приложения
@@ -25,9 +25,9 @@ type BinanceConfig struct {
 
 // TradingConfig содержит настройки торговли
 type TradingConfig struct {
-	Symbols       []string `yaml:"symbols"`
-	Interval      string   `yaml:"interval"`
-	RiskPerTrade  float64  `yaml:"risk_per_trade"`
+	Symbols      []string `yaml:"symbols"`
+	Interval     string   `yaml:"interval"`
+	RiskPerTrade float64  `yaml:"risk_per_trade"`
 }
 
 // AnalysisConfig содержит настройки аналитических модулей
@@ -106,13 +106,14 @@ type UIConfig struct {
 func Load(path string) (*Config, error) {
 	data, err := ioutil.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("ошибка чтения файла конфигурации: %w", err)
+		logger.Fatal("Ошибка чтения файла конфигурации", zap.Error(err))
 	}
 
 	var config Config
 	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("ошибка разбора конфигурации: %w", err)
+		logger.Fatal("Ошибка разбора файла конфигурации", zap.Error(err))
 	}
 
+	logger.Info("Загружена конфигурация", zap.Any("Symbols", config.Trading.Symbols))
 	return &config, nil
 }

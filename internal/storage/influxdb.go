@@ -3,6 +3,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -245,8 +246,8 @@ func (s *InfluxDBStorage) SaveFundingRate(ctx context.Context, rate *models.Fund
 			"symbol": rate.Symbol,
 		},
 		map[string]interface{}{
-			"rate":            rate.Rate,
-			"next_funding":    rate.NextFundingTime,
+			"rate":         rate.Rate,
+			"next_funding": rate.NextFundingTime,
 		},
 		rate.Timestamp,
 	)
@@ -374,6 +375,9 @@ func (s *InfluxDBStorage) GetOpenInterest(ctx context.Context, symbol string, li
 // SaveSignal сохраняет сигнал
 func (s *InfluxDBStorage) SaveSignal(ctx context.Context, signal *models.SignalResult) error {
 	// Создаем точку для записи
+
+	componentsJSON, _ := json.Marshal(signal.Components)
+
 	point := influxdb2.NewPoint(
 		"signals",
 		map[string]string{
@@ -384,7 +388,7 @@ func (s *InfluxDBStorage) SaveSignal(ctx context.Context, signal *models.SignalR
 			"strength":       signal.SignalStrength,
 			"position_size":  signal.PositionSize,
 			"price":          signal.CurrentPrice,
-			"components":     fmt.Sprintf("%v", signal.Components),
+			"components":     string(componentsJSON),
 		},
 		signal.Timestamp,
 	)
@@ -497,9 +501,11 @@ func convertOrderBookLevels(levels []models.OrderBookLevel) string {
 
 // parseOrderBookLevels парсит строку в уровни стакана
 func parseOrderBookLevels(data string) []models.OrderBookLevel {
-	// Это упрощенная реализация, в реальном коде нужен более надежный парсинг JSON
 	var levels []models.OrderBookLevel
-	// Парсинг пропущен для упрощения
+	if err := json.Unmarshal([]byte(data), &levels); err != nil {
+		fmt.Printf("Ошибка парсинга стакана: %v\n", err)
+		return []models.OrderBookLevel{}
+	}
 	return levels
 }
 

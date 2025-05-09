@@ -3,6 +3,7 @@ package aggregator
 import (
 	"context"
 	"fmt"
+	"go.uber.org/zap"
 	"sync"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/skalibog/bfma/internal/config"
 	"github.com/skalibog/bfma/internal/exchange"
 	"github.com/skalibog/bfma/internal/storage"
+	"github.com/skalibog/bfma/pkg/logger"
 	"github.com/skalibog/bfma/pkg/models"
 )
 
@@ -27,10 +29,11 @@ type Analyzer struct {
 	fundingAnal     *funding.Analyzer
 	oiAnal          *oianalysis.Analyzer
 	volumeDeltaAnal *volumedelta.Analyzer
+	symbols         []string
 }
 
 // NewAnalyzer создает новый анализатор
-func NewAnalyzer(cfg config.AnalysisConfig, storage storage.Storage, client *exchange.BinanceClient) *Analyzer {
+func NewAnalyzer(cfg config.AnalysisConfig, storage storage.Storage, client *exchange.BinanceClient, symbols []string) *Analyzer {
 	return &Analyzer{
 		config:          cfg,
 		storage:         storage,
@@ -40,15 +43,14 @@ func NewAnalyzer(cfg config.AnalysisConfig, storage storage.Storage, client *exc
 		fundingAnal:     funding.NewAnalyzer(cfg.Funding),
 		oiAnal:          oianalysis.NewAnalyzer(cfg.OpenInterest),
 		volumeDeltaAnal: volumedelta.NewAnalyzer(cfg.VolumeDelta),
+		symbols:         symbols, // Инициализируем из параметра
 	}
 }
 
 // GenerateSignals генерирует сигналы для всех отслеживаемых символов
 func (a *Analyzer) GenerateSignals(ctx context.Context) (map[string]*models.SignalResult, error) {
-	symbols, err := a.storage.GetSymbols(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("ошибка получения списка символов: %w", err)
-	}
+	// Используем наш внутренний список символов
+	symbols := a.symbols
 
 	results := make(map[string]*models.SignalResult)
 	var wg sync.WaitGroup
@@ -120,21 +122,25 @@ func (a *Analyzer) generateSignalForSymbol(ctx context.Context, symbol string) (
 
 	wg.Wait()
 
-	// Проверяем ошибки
 	if technicalErr != nil {
-		return nil, fmt.Errorf("ошибка технического анализа: %w", technicalErr)
+		logger.Warn("Предупреждение: технический анализ недоступен", zap.String("symbol", symbol), zap.Error(technicalErr))
+		technicalSignal = 0
 	}
 	if orderbookErr != nil {
-		return nil, fmt.Errorf("ошибка анализа стакана: %w", orderbookErr)
+		logger.Warn("Предупреждение: анализ стакана недоступен", zap.String("symbol", symbol), zap.Error(orderbookErr))
+		orderbookSignal = 0
 	}
 	if fundingErr != nil {
-		return nil, fmt.Errorf("ошибка анализа ставок финансирования: %w", fundingErr)
+		logger.Warn("Предупреждение: анализ финансирования недоступен", zap.String("symbol", symbol), zap.Error(fundingErr))
+		fundingSignal = 0
 	}
 	if oiErr != nil {
-		return nil, fmt.Errorf("ошибка анализа открытого интереса: %w", oiErr)
+		logger.Warn("Предупреждение: анализ открытого интереса недоступен", zap.String("symbol", symbol), zap.Error(oiErr))
+		oiSignal = 0
 	}
 	if volumeDeltaErr != nil {
-		return nil, fmt.Errorf("ошибка анализа дельты объемов: %w", volumeDeltaErr)
+		logger.Warn("Предупреждение: анализ дельты объемов недоступен", zap.String("symbol", symbol), zap.Error(volumeDeltaErr))
+		volumeDeltaSignal = 0
 	}
 
 	// Взвешиваем сигналы

@@ -1,19 +1,21 @@
-// exchange/binance.go
 package exchange
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"go.uber.org/zap"
+	"io/ioutil"
+	"log"
+	"net/http"
 	"strconv"
 	"time"
-	"net/http"
-	"io/ioutil"
-	"encoding/json"
 
 	"github.com/adshao/go-binance/v2"
 	"github.com/adshao/go-binance/v2/futures"
 	"github.com/skalibog/bfma/internal/config"
 	"github.com/skalibog/bfma/internal/storage"
+	"github.com/skalibog/bfma/pkg/logger"
 	"github.com/skalibog/bfma/pkg/models"
 )
 
@@ -25,14 +27,18 @@ type BinanceClient struct {
 
 // NewBinanceClient создает новый клиент Binance
 func NewBinanceClient(cfg config.BinanceConfig) (*BinanceClient, error) {
-	futuresClient := futures.NewClient(cfg.APIKey, cfg.APISecret)
-	spotClient := binance.NewClient(cfg.APIKey, cfg.APISecret)
-
+	// Устанавливаем режим testnet перед созданием клиентов
 	if cfg.Testnet {
-		// Для futures используем константу для testnet
 		binance.UseTestnet = true
 		futures.UseTestnet = true
 	}
+
+	// После установки режима создаем клиенты
+	futuresClient := futures.NewClient(cfg.APIKey, cfg.APISecret)
+	spotClient := binance.NewClient(cfg.APIKey, cfg.APISecret)
+
+	// Отладочный вывод
+	logger.Info("Создание клиента Binance успешно")
 
 	return &BinanceClient{
 		futures: futuresClient,
@@ -51,6 +57,7 @@ func (c *BinanceClient) GetKlines(ctx context.Context, symbol, interval string, 
 		return nil, fmt.Errorf("ошибка получения свечей: %w", err)
 	}
 
+	logger.Info("Klines", zap.String("symbol", symbol), zap.String("interval", interval), zap.Int("limit", limit), zap.Int("count", len(klines)))
 	candles := make([]*models.Candle, len(klines))
 	for i, k := range klines {
 		// Преобразуем строковые значения в float64
@@ -139,47 +146,47 @@ func (c *BinanceClient) GetFundingRate(ctx context.Context, symbol string) (*mod
 
 // OpenInterestResp структура для парсинга ответа API
 type OpenInterestResp struct {
-    Symbol      string `json:"symbol"`
-    OpenInterest string `json:"openInterest"`
-    Time        int64  `json:"time"`
+	Symbol       string `json:"symbol"`
+	OpenInterest string `json:"openInterest"`
+	Time         int64  `json:"time"`
 }
 
 // GetOpenInterest получает текущий открытый интерес напрямую через REST API
 func (c *BinanceClient) GetOpenInterest(ctx context.Context, symbol string) (*models.OpenInterest, error) {
-    baseURL := "https://fapi.binance.com"
-    if futures.UseTestnet {
-        baseURL = "https://testnet.binancefuture.com"
-    }
+	baseURL := "https://fapi.binance.com"
+	if futures.UseTestnet {
+		baseURL = "https://testnet.binancefuture.com"
+	}
 
-    url := fmt.Sprintf("%s/fapi/v1/openInterest?symbol=%s", baseURL, symbol)
+	url := fmt.Sprintf("%s/fapi/v1/openInterest?symbol=%s", baseURL, symbol)
 
-    req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-    if err != nil {
-        return nil, fmt.Errorf("ошибка создания запроса: %w", err)
-    }
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка создания запроса: %w", err)
+	}
 
-    client := &http.Client{}
-    resp, err := client.Do(req)
-    if err != nil {
-        return nil, fmt.Errorf("ошибка выполнения запроса: %w", err)
-    }
-    defer resp.Body.Close()
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка выполнения запроса: %w", err)
+	}
+	defer resp.Body.Close()
 
-    body, err := ioutil.ReadAll(resp.Body)
-    if err != nil {
-        return nil, fmt.Errorf("ошибка чтения ответа: %w", err)
-    }
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка чтения ответа: %w", err)
+	}
 
-    var oiResp OpenInterestResp
-    if err := json.Unmarshal(body, &oiResp); err != nil {
-        return nil, fmt.Errorf("ошибка парсинга ответа: %w", err)
-    }
+	var oiResp OpenInterestResp
+	if err := json.Unmarshal(body, &oiResp); err != nil {
+		return nil, fmt.Errorf("ошибка парсинга ответа: %w", err)
+	}
 
-    return &models.OpenInterest{
-        Symbol:    symbol,
-        Value:     oiResp.OpenInterest,
-        Timestamp: time.Unix(oiResp.Time/1000, 0),
-    }, nil
+	return &models.OpenInterest{
+		Symbol:    symbol,
+		Value:     oiResp.OpenInterest,
+		Timestamp: time.Unix(oiResp.Time/1000, 0),
+	}, nil
 }
 
 // DataCollector интерфейс для сборщиков данных
@@ -250,12 +257,13 @@ func (c *CandleCollector) Start(ctx context.Context) error {
 		}
 
 		errHandler := func(err error) {
-			fmt.Printf("Ошибка WebSocket для свечей %s: %v\n", symbol, err)
+			logger.Error("Ошибка WebSocket для свечей", zap.String("symbol", symbol), zap.Error(err))
 		}
 
 		var err error
 		c.doneC, c.stopC, err = futures.WsKlineServe(symbol, c.interval, wsKlineHandler, errHandler)
 		if err != nil {
+			logger.Error("Ошибка подписки на WebSocket для свечей", zap.String("symbol", symbol), zap.Error(err))
 			return fmt.Errorf("ошибка подписки на WebSocket для свечей %s: %w", symbol, err)
 		}
 	}
@@ -272,12 +280,12 @@ func (c *CandleCollector) Stop() {
 
 // OrderBookCollector сборщик данных о стакане заявок
 type OrderBookCollector struct {
-	client  *BinanceClient
-	storage storage.Storage
-	symbols []string
-	depth   int
-	doneC   chan struct{}
-	stopC   chan struct{}
+	client       *BinanceClient
+	storage      storage.Storage
+	symbols      []string
+	depth        int
+	doneChannels []chan struct{} // Было: doneC chan struct{}
+	stopChannels []chan struct{} // Было: stopC chan struct{}
 }
 
 // NewOrderBookCollector создает новый сборщик стакана заявок
@@ -292,6 +300,10 @@ func NewOrderBookCollector(client *BinanceClient, storage storage.Storage, symbo
 
 // Start запускает сборщик данных
 func (c *OrderBookCollector) Start(ctx context.Context) error {
+	// Создаем структуры для хранения каналов
+	c.doneChannels = make([]chan struct{}, 0, len(c.symbols))
+	c.stopChannels = make([]chan struct{}, 0, len(c.symbols))
+
 	// Загружаем текущий стакан
 	for _, symbol := range c.symbols {
 		orderBook, err := c.client.GetOrderBook(ctx, symbol, c.depth)
@@ -304,8 +316,10 @@ func (c *OrderBookCollector) Start(ctx context.Context) error {
 		}
 	}
 
-	// Подписываемся на обновления стакана через WebSocket
+	// Подписка на WebSocket-обновления
 	for _, symbol := range c.symbols {
+		symbol := symbol // Локальная копия для горутины
+
 		handler := func(event *futures.WsDepthEvent) {
 			// Создаем новый объект стакана
 			orderBook := &models.OrderBook{
@@ -336,15 +350,17 @@ func (c *OrderBookCollector) Start(ctx context.Context) error {
 		}
 
 		errHandler := func(err error) {
-			fmt.Printf("Ошибка WebSocket для стакана %s: %v\n", symbol, err)
+			log.Printf("Ошибка WebSocket для стакана %s: %v", symbol, err)
 		}
 
-		// Используем WsDepthServe
-		var err error
-		c.doneC, c.stopC, err = futures.WsDiffDepthServe(symbol, handler, errHandler)
+		doneC, stopC, err := futures.WsDiffDepthServe(symbol, handler, errHandler)
 		if err != nil {
-			return fmt.Errorf("ошибка подписки на WebSocket для стакана %s: %w", symbol, err)
+			return fmt.Errorf("ошибка подписки на WebSocket для %s: %w", symbol, err)
 		}
+
+		// Добавляем каналы в слайсы
+		c.doneChannels = append(c.doneChannels, doneC)
+		c.stopChannels = append(c.stopChannels, stopC)
 	}
 
 	return nil
@@ -352,8 +368,10 @@ func (c *OrderBookCollector) Start(ctx context.Context) error {
 
 // Stop останавливает сборщик данных
 func (c *OrderBookCollector) Stop() {
-	if c.stopC != nil {
-		close(c.stopC)
+	for _, stopC := range c.stopChannels {
+		if stopC != nil {
+			close(stopC)
+		}
 	}
 }
 

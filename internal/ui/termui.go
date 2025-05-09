@@ -1,241 +1,410 @@
 package ui
 
 import (
+	"bufio"
+	"context"
+	"encoding/json"
 	"fmt"
+	"github.com/skalibog/bfma/pkg/logger"
+	"go.uber.org/zap"
+	"os"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/gdamore/tcell/v2"
-	"github.com/rivo/tview"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/skalibog/bfma/internal/analysis/aggregator"
 	"github.com/skalibog/bfma/internal/config"
 	"github.com/skalibog/bfma/pkg/models"
 )
 
+// Стили UI
+var (
+	// Основные цвета
+	primaryColor   = lipgloss.Color("#0077cc")
+	secondaryColor = lipgloss.Color("#333333")
+	errorColor     = lipgloss.Color("#cc3300")
+	successColor   = lipgloss.Color("#33cc33")
+	warningColor   = lipgloss.Color("#cccc00")
+	// Главный контейнер - будет адаптироваться к размеру экрана
+	appStyle = lipgloss.NewStyle().
+			Padding(1, 2).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(primaryColor)
+	// Заголовок - будет адаптироваться к размеру экрана
+	titleStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#ffffff")).
+			Background(primaryColor).
+			Padding(0, 1).
+			Align(lipgloss.Center)
+	// Секция сигналов - будет адаптироваться к размеру экрана
+	signalsHeaderStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#ffffff")).
+				Background(secondaryColor).
+				Padding(0, 1)
+	signalsSectionStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(secondaryColor).
+				Padding(0, 1)
+	// Секция логов - будет адаптироваться к размеру экрана
+	logsHeaderStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#ffffff")).
+			Background(secondaryColor).
+			Padding(0, 1)
+	logsSectionStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(secondaryColor).
+				Padding(0, 1)
+	// Футер - будет адаптироваться к размеру экрана
+	footerStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#999999")).
+			Padding(0, 1)
+)
+
 // TermUI представляет терминальный интерфейс
 type TermUI struct {
-	app          *tview.Application
-	analyzer     *aggregator.Analyzer
-	signalsTable *tview.Table
-	detailsView  *tview.TextView
-	logsView     *tview.TextView
-	signals      map[string]*models.SignalResult
-	signalsMutex sync.RWMutex
-	config       config.UIConfig
+	analyzer      *aggregator.Analyzer
+	signals       map[string]*models.SignalResult
+	signalsMutex  sync.RWMutex
+	logs          []string
+	logsMutex     sync.RWMutex
+	config        config.UIConfig
+	program       *tea.Program
+	selectedIndex int
+	width         int
+	height        int
+	logFile       string // Путь к файлу логов
 }
 
-// NewTermUI создает новый терминальный интерфейс
-func NewTermUI(cfg config.UIConfig, analyzer *aggregator.Analyzer) (*TermUI, error) {
-	app := tview.NewApplication()
+// Сообщения для обновления UI
+type refreshMsg struct{}
+type windowSizeMsg tea.WindowSizeMsg
 
-	// Таблица сигналов
-	signalsTable := tview.NewTable().
-		SetBorders(true).
-		SetSelectable(true, false)
+// bubbleModel - модель для bubbletea
+type bubbleModel struct {
+	ui *TermUI
+}
 
-	// Заголовки
-	signalsTable.SetCell(0, 0, tview.NewTableCell("Символ").SetSelectable(false).SetAttributes(tcell.AttrBold))
-	signalsTable.SetCell(0, 1, tview.NewTableCell("Сигнал").SetSelectable(false).SetAttributes(tcell.AttrBold))
-	signalsTable.SetCell(0, 2, tview.NewTableCell("Сила").SetSelectable(false).SetAttributes(tcell.AttrBold))
-	signalsTable.SetCell(0, 3, tview.NewTableCell("Размер").SetSelectable(false).SetAttributes(tcell.AttrBold))
-	signalsTable.SetCell(0, 4, tview.NewTableCell("Цена").SetSelectable(false).SetAttributes(tcell.AttrBold))
-	signalsTable.SetCell(0, 5, tview.NewTableCell("Время").SetSelectable(false).SetAttributes(tcell.AttrBold))
-
-	// Подробности сигнала
-	detailsView := tview.NewTextView()
-	detailsView.SetDynamicColors(true)
-	detailsView.SetBorder(true)
-	detailsView.SetTitle("Детали сигнала")
-
-	// Лог событий
-	logsView := tview.NewTextView()
-	logsView.SetScrollable(true)
-	logsView.SetDynamicColors(true)
-	logsView.SetBorder(true)
-	logsView.SetTitle("Журнал событий")
-
+func NewTermUI(cfg config.UIConfig, analyzer *aggregator.Analyzer, ctx context.Context) (*TermUI, error) {
 	ui := &TermUI{
-    app:          app,
-    analyzer:     analyzer,
-    signalsTable: signalsTable,
-    detailsView:  detailsView,
-    logsView:     logsView,
-    signals:      make(map[string]*models.SignalResult),
-    config:       cfg,
-}
+		analyzer:      analyzer,
+		signals:       make(map[string]*models.SignalResult),
+		logs:          []string{"BFMA запущен. Ожидание данных..."},
+		config:        cfg,
+		selectedIndex: 0,
+		width:         120,
+		height:        40,
+		logFile:       "app.json.log", // Путь к файлу логов по умолчанию
+	}
 
-	// Главный layout
-	flex := tview.NewFlex().
-		SetDirection(tview.FlexRow).
-		AddItem(signalsTable, 0, 3, true).
-		AddItem(tview.NewFlex().
-			AddItem(detailsView, 0, 1, false).
-			AddItem(logsView, 0, 1, false),
-			0, 2, false)
+	// Загружаем логи из файла при запуске
+	if err := ui.loadLogsFromFile(); err != nil {
+		ui.logs = append(ui.logs, fmt.Sprintf("Ошибка загрузки логов: %v", err))
+	}
 
-	// Обработка выбора строки в таблице
-	signalsTable.SetSelectedFunc(func(row, column int) {
-		if row <= 0 {
-			return
+	// Запускаем таймер для обновления логов
+	go func() {
+		ticker := time.NewTicker(1 * time.Second) // Интервал обновления логов
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				if err := ui.loadLogsFromFile(); err != nil {
+					// Если произошла ошибка, просто игнорируем ее
+					// и продолжаем работу
+					// Перезагрузка логов
+					logger.Warn("Ошибка загрузки логов", zap.Error(err))
+				}
+			}
 		}
-		cellSymbol := signalsTable.GetCell(row, 0)
-		if cellSymbol == nil {
-			return
-		}
-		symbol := cellSymbol.Text
-		ui.updateDetailsView(symbol)
-	})
-
-
-	app.SetRoot(flex, true).EnableMouse(true)
-
-	// Добавляем обработку клавиш
-	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyEscape {
-			app.Stop()
-			return nil
-		}
-		return event
-	})
+	}()
 
 	return ui, nil
 }
 
-// Start запускает пользовательский интерфейс
 func (ui *TermUI) Start() {
-	// Запускаем обновление UI в отдельном потоке
-	go func() {
-		ticker := time.NewTicker(time.Duration(ui.config.RefreshRate) * time.Millisecond)
-		defer ticker.Stop()
+	model := bubbleModel{ui: ui}
+	ui.program = tea.NewProgram(model, tea.WithAltScreen())
 
-		for range ticker.C {
-			ui.app.QueueUpdateDraw(func() {
-				ui.refreshSignalsTable()
-			})
-		}
-	}()
-
-	// Запускаем основной цикл UI
-	if err := ui.app.Run(); err != nil {
+	// Запускаем UI
+	if err := ui.program.Start(); err != nil {
 		fmt.Printf("Ошибка запуска UI: %v\n", err)
 	}
 }
 
-// UpdateSignals обновляет сигналы
 func (ui *TermUI) UpdateSignals(signals map[string]*models.SignalResult) {
 	ui.signalsMutex.Lock()
 	defer ui.signalsMutex.Unlock()
 
-	// Обновляем сигналы
-	for symbol, signal := range signals {
-		ui.signals[symbol] = signal
-		ui.logSignalChange(symbol, signal)
+	ui.signals = signals
+
+	if ui.program != nil {
+		ui.program.Send(refreshMsg{})
 	}
 }
 
-// refreshSignalsTable обновляет таблицу сигналов
-func (ui *TermUI) refreshSignalsTable() {
-	ui.signalsMutex.RLock()
-	defer ui.signalsMutex.RUnlock()
-
-	// Очищаем таблицу, оставляя заголовки
-	ui.signalsTable.Clear()
-	ui.signalsTable.SetCell(0, 0, tview.NewTableCell("Символ").SetSelectable(false).SetAttributes(tcell.AttrBold))
-	ui.signalsTable.SetCell(0, 1, tview.NewTableCell("Сигнал").SetSelectable(false).SetAttributes(tcell.AttrBold))
-	ui.signalsTable.SetCell(0, 2, tview.NewTableCell("Сила").SetSelectable(false).SetAttributes(tcell.AttrBold))
-	ui.signalsTable.SetCell(0, 3, tview.NewTableCell("Размер").SetSelectable(false).SetAttributes(tcell.AttrBold))
-	ui.signalsTable.SetCell(0, 4, tview.NewTableCell("Цена").SetSelectable(false).SetAttributes(tcell.AttrBold))
-	ui.signalsTable.SetCell(0, 5, tview.NewTableCell("Время").SetSelectable(false).SetAttributes(tcell.AttrBold))
-
-	// Добавляем строки с сигналами
-	row := 1
-	for symbol, signal := range ui.signals {
-		// Символ
-		ui.signalsTable.SetCell(row, 0, tview.NewTableCell(symbol))
-
-		// Сигнал
-		signalCell := tview.NewTableCell(signal.Recommendation)
-		switch signal.Recommendation {
-		case "СИЛЬНАЯ ПОКУПКА":
-			signalCell.SetTextColor(tcell.ColorGreen).SetAttributes(tcell.AttrBold)
-		case "ПОКУПКА":
-			signalCell.SetTextColor(tcell.ColorGreen)
-		case "СИЛЬНАЯ ПРОДАЖА":
-			signalCell.SetTextColor(tcell.ColorRed).SetAttributes(tcell.AttrBold)
-		case "ПРОДАЖА":
-			signalCell.SetTextColor(tcell.ColorRed)
-		default:
-			signalCell.SetTextColor(tcell.ColorYellow)
+// Запись лога в файл
+func (ui *TermUI) loadLogsFromFile() error {
+	file, err := os.Open(ui.logFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Файл не существует, это не ошибка
+			return nil
 		}
-		ui.signalsTable.SetCell(row, 1, signalCell)
-
-		// Сила сигнала
-		strengthStr := fmt.Sprintf("%.2f", signal.SignalStrength)
-		strengthCell := tview.NewTableCell(strengthStr)
-		if signal.SignalStrength > 0 {
-			strengthCell.SetTextColor(tcell.ColorGreen)
-		} else if signal.SignalStrength < 0 {
-			strengthCell.SetTextColor(tcell.ColorRed)
-		}
-		ui.signalsTable.SetCell(row, 2, strengthCell)
-
-		// Размер позиции
-		ui.signalsTable.SetCell(row, 3, tview.NewTableCell(fmt.Sprintf("%.1f", signal.PositionSize)))
-
-		// Цена
-		ui.signalsTable.SetCell(row, 4, tview.NewTableCell(fmt.Sprintf("%.2f", signal.CurrentPrice)))
-
-		// Время
-		ui.signalsTable.SetCell(row, 5, tview.NewTableCell(signal.Timestamp.Format("15:04:05")))
-
-		row++
+		return err
 	}
-}
+	defer file.Close()
 
-// updateDetailsView обновляет подробную информацию о сигнале
-func (ui *TermUI) updateDetailsView(symbol string) {
-	ui.signalsMutex.RLock()
-	defer ui.signalsMutex.RUnlock()
+	scanner := bufio.NewScanner(file)
+	var logs []string
 
-	signal, ok := ui.signals[symbol]
-	if !ok {
-		ui.detailsView.SetText(fmt.Sprintf("Нет данных для %s", symbol))
-		return
-	}
+	// Регулярное выражение для удаления ANSI-цветов
+	ansiRegex := regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
-	details := fmt.Sprintf("Символ: [yellow]%s[white]\n", symbol)
-	details += fmt.Sprintf("Рекомендация: [blue]%s[white]\n", signal.Recommendation)
-	details += fmt.Sprintf("Сила сигнала: [blue]%.2f[white]\n", signal.SignalStrength)
-	details += fmt.Sprintf("Размер позиции: [blue]%.1f[white]\n", signal.PositionSize)
-	details += fmt.Sprintf("Текущая цена: [blue]%.2f[white]\n", signal.CurrentPrice)
-	details += fmt.Sprintf("Время сигнала: [blue]%s[white]\n\n", signal.Timestamp.Format("15:04:05"))
+	// Читаем строки из файла
+	for scanner.Scan() {
+		line := scanner.Text()
 
-	details += "Компоненты сигнала:\n"
-	for name, value := range signal.Components {
-		var color string
-		if value > 0 {
-			color = "green"
-		} else if value < 0 {
-			color = "red"
+		// Пытаемся распарсить JSON
+		var zapLog map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &zapLog); err == nil {
+			// Успешно распарсили JSON
+
+			// Получаем основные поля
+			level, _ := zapLog["level"].(string)
+			ts, _ := zapLog["ts"].(string)
+			msg, _ := zapLog["msg"].(string)
+
+			// Удаляем ANSI-цвета из уровня логирования
+			level = ansiRegex.ReplaceAllString(level, "")
+
+			// Форматируем сообщение
+			timestamp := ""
+			if t, err := time.Parse("02.01.2006 - 15:04:05.999999999Z07:00", ts); err == nil {
+				timestamp = t.Format("15:04:05")
+			}
+
+			formattedMsg := fmt.Sprintf("[%s] [%s] %s", timestamp, level, msg)
+
+			// Добавляем дополнительные поля, если они есть
+			for k, v := range zapLog {
+				if k != "level" && k != "ts" && k != "msg" && k != "caller" {
+					formattedMsg += fmt.Sprintf(" (%s: %v)", k, v)
+				}
+			}
+
+			logs = append(logs, formattedMsg)
 		} else {
-			color = "white"
+			// Не удалось распарсить JSON, добавляем как есть
+			logs = append(logs, line)
 		}
-		details += fmt.Sprintf("  - %s: [%s]%.2f[white]\n", name, color, value)
+
+		// Ограничиваем количество логов
+		if len(logs) > 50 {
+			logs = logs[1:] // Удаляем самую старую запись
+		}
 	}
 
-	ui.detailsView.SetText(details)
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+
+	// Добавляем загруженные логи
+	ui.logsMutex.Lock()
+	defer ui.logsMutex.Unlock()
+
+	if len(logs) > 0 {
+		ui.logs = logs
+		// Ограничиваем количество логов
+		if len(ui.logs) > 50 {
+			ui.logs = ui.logs[len(ui.logs)-50:]
+		}
+	}
+
+	return nil
 }
 
-// logSignalChange добавляет запись в журнал при изменении сигнала
-func (ui *TermUI) logSignalChange(symbol string, signal *models.SignalResult) {
-	logEntry := fmt.Sprintf("[%s] %s: %s (%.2f)\n",
-		signal.Timestamp.Format("15:04:05"),
-		symbol,
-		signal.Recommendation,
-		signal.SignalStrength)
+func renderLogsSection(logs []string) string {
+	header := logsHeaderStyle.Render("ЛОГИ")
+	content := strings.Builder{}
 
-	ui.app.QueueUpdateDraw(func() {
-		fmt.Fprint(ui.logsView, logEntry)
-		ui.logsView.ScrollToEnd()
-	})
+	// Показываем последние 6 логов (или больше, если размер экрана позволяет)
+	maxLogsToShow := 50
+	if logsSectionStyle.GetHeight() > 8 {
+		maxLogsToShow = logsSectionStyle.GetHeight() - 2
+	}
+
+	start := 0
+	if len(logs) > maxLogsToShow {
+		start = len(logs) - maxLogsToShow
+	}
+
+	for i := start; i < len(logs); i++ {
+		// Форматируем лог
+		log := logs[i]
+
+		// Выделение по уровню логирования
+		if strings.Contains(log, "[ERROR]") {
+			log = lipgloss.NewStyle().Foreground(errorColor).Render(log)
+		} else if strings.Contains(log, "[INFO]") {
+			log = lipgloss.NewStyle().Foreground(successColor).Render(log)
+		} else if strings.Contains(log, "[WARN]") {
+			log = lipgloss.NewStyle().Foreground(warningColor).Render(log)
+		} else if strings.Contains(log, "[DEBUG]") {
+			log = lipgloss.NewStyle().Foreground(lipgloss.Color("#9999ff")).Render(log)
+		}
+
+		content.WriteString("  " + log + "\n")
+	}
+
+	return logsSectionStyle.Render(
+		lipgloss.JoinVertical(lipgloss.Left,
+			header,
+			content.String(),
+		),
+	)
+}
+
+// Методы для bubbletea
+func (m bubbleModel) Init() tea.Cmd {
+	return nil
+}
+
+func (m bubbleModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		case "up":
+			m.ui.selectedIndex = max(0, m.ui.selectedIndex-1)
+		case "down":
+			symbols := getSymbolsFromSignals(m.ui.signals)
+			m.ui.selectedIndex = min(len(symbols)-1, m.ui.selectedIndex+1)
+		case "r": // Добавлена клавиша для перезагрузки логов из файла
+
+		}
+
+	case tea.WindowSizeMsg:
+		m.ui.width = msg.Width
+		m.ui.height = msg.Height
+
+	case refreshMsg:
+		// Просто обновляем UI
+	}
+
+	return m, nil
+}
+
+func (m bubbleModel) View() string {
+	m.ui.signalsMutex.RLock()
+	m.ui.logsMutex.RLock()
+	defer m.ui.signalsMutex.RUnlock()
+	defer m.ui.logsMutex.RUnlock()
+
+	// Создаем компоненты UI
+	title := titleStyle.Render("BFMA - Binance Futures Market Analyzer")
+	signals := renderSignalsSection(m.ui.signals, m.ui.selectedIndex)
+	logs := renderLogsSection(m.ui.logs)
+	footer := footerStyle.Render("Клавиши: ↑/↓ - навигация, R - перезагрузить логи, Q - выход")
+
+	// Собираем UI
+	return appStyle.Render(
+		lipgloss.JoinVertical(lipgloss.Left,
+			title,
+			"\n",
+			signals,
+			"\n",
+			logs,
+			"\n",
+			footer,
+		),
+	)
+}
+
+// Вспомогательные функции
+func renderSignalsSection(signals map[string]*models.SignalResult, selectedIndex int) string {
+	header := signalsHeaderStyle.Render("СИГНАЛЫ")
+	content := strings.Builder{}
+
+	symbols := getSymbolsFromSignals(signals)
+
+	if len(symbols) == 0 {
+		content.WriteString("  Ожидание данных...\n")
+	} else {
+		for i, symbol := range symbols {
+			signal := signals[symbol]
+
+			// Форматируем сигнал с цветом
+			signalText := formatSignalText(signal.Recommendation, signal.SignalStrength)
+
+			// Создаем строку данных
+			line := fmt.Sprintf("  %s: %s (%.2f) Цена: %.2f",
+				symbol, signalText, signal.SignalStrength, signal.CurrentPrice)
+
+			// Выделяем выбранную строку
+			if i == selectedIndex {
+				line = "> " + line[2:]
+				line = lipgloss.NewStyle().Background(lipgloss.Color("#222222")).Render(line)
+			}
+
+			content.WriteString(line + "\n")
+		}
+	}
+
+	return signalsSectionStyle.Render(
+		lipgloss.JoinVertical(lipgloss.Left,
+			header,
+			content.String(),
+		),
+	)
+}
+
+// Вспомогательные функции
+func formatSignalText(recommendation string, strength float64) string {
+	var style lipgloss.Style
+
+	switch recommendation {
+	case "СИЛЬНАЯ ПОКУПКА":
+		style = lipgloss.NewStyle().Foreground(successColor).Bold(true)
+	case "ПОКУПКА":
+		style = lipgloss.NewStyle().Foreground(successColor)
+	case "СИЛЬНАЯ ПРОДАЖА":
+		style = lipgloss.NewStyle().Foreground(errorColor).Bold(true)
+	case "ПРОДАЖА":
+		style = lipgloss.NewStyle().Foreground(errorColor)
+	default:
+		style = lipgloss.NewStyle().Foreground(warningColor)
+	}
+
+	return style.Render(recommendation)
+}
+
+func getSymbolsFromSignals(signals map[string]*models.SignalResult) []string {
+	symbols := make([]string, 0, len(signals))
+	for symbol := range signals {
+		symbols = append(symbols, symbol)
+	}
+	return symbols
+}
+
+// Вспомогательные функции min/max для Go до 1.21
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
