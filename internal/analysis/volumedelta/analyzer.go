@@ -31,7 +31,7 @@ func (a *Analyzer) Analyze(ctx context.Context, storage storage.Storage, symbol 
 		return 0, fmt.Errorf("ошибка получения свечей: %w", err)
 	}
 
-	if len(candles) < a.config.Lookback*30 {
+	if len(candles) < a.config.Lookback*10 {
 		return 0, fmt.Errorf("недостаточно данных для анализа дельты объемов: %d свечей", len(candles))
 	}
 
@@ -114,7 +114,7 @@ func (a *Analyzer) analyzeVolumeImpulses(candles []*models.Candle) float64 {
 
 			// Определяем направление импульса
 			impulseStrength := (volumeRatio - 1.0) * 10 // Сила пропорциональна превышению среднего
-			if impulseStrength > a.config.SignificanceThreshold * 10 {
+			if impulseStrength > a.config.SignificanceThreshold*10 {
 				impulseStrength = a.config.SignificanceThreshold * 10 // Ограничиваем максимальную силу
 			}
 
@@ -153,7 +153,7 @@ func (a *Analyzer) analyzeVolumePriceRelation(candles []*models.Candle) float64 
 		priceChange := (current.Close - previous.Close) / previous.Close
 
 		// Анализируем расхождения между изменениями объема и цены
-		if math.Abs(volumeChange) > 0.1 {  // Значительное изменение объема
+		if math.Abs(volumeChange) > 0.1 { // Значительное изменение объема
 			// Цена растет, объем падает = слабый рост
 			if priceChange > 0 && volumeChange < -0.1 {
 				signal -= 5

@@ -123,7 +123,10 @@ func (a *Analyzer) generateSignalForSymbol(ctx context.Context, symbol string) (
 	wg.Wait()
 
 	if technicalErr != nil {
-		logger.Warn("Предупреждение: технический анализ недоступен", zap.String("symbol", symbol), zap.Error(technicalErr))
+		logger.Warn("Предупреждение: технический анализ недоступен",
+			zap.String("symbol", symbol),
+			zap.Error(technicalErr),
+			zap.Int("требуется_свечей", a.config.Technical.MACDSlow+a.config.Technical.MACDSignal))
 		technicalSignal = 0
 	}
 	if orderbookErr != nil {
@@ -154,20 +157,19 @@ func (a *Analyzer) generateSignalForSymbol(ctx context.Context, symbol string) (
 	var recommendation string
 	var positionSize float64
 
-	switch {
-	case weightedSignal >= a.config.SignalThresholds.StrongBuy:
+	if weightedSignal >= a.config.SignalThresholds.StrongBuy {
 		recommendation = "СИЛЬНАЯ ПОКУПКА"
 		positionSize = 1.0
-	case weightedSignal >= a.config.SignalThresholds.Buy:
+	} else if weightedSignal >= a.config.SignalThresholds.Buy {
 		recommendation = "ПОКУПКА"
 		positionSize = 0.7
-	case weightedSignal <= a.config.SignalThresholds.StrongSell:
+	} else if weightedSignal <= a.config.SignalThresholds.StrongSell {
 		recommendation = "СИЛЬНАЯ ПРОДАЖА"
 		positionSize = 1.0
-	case weightedSignal <= a.config.SignalThresholds.Sell:
+	} else if weightedSignal <= a.config.SignalThresholds.Sell {
 		recommendation = "ПРОДАЖА"
 		positionSize = 0.7
-	default:
+	} else {
 		recommendation = "НЕЙТРАЛЬНО"
 		positionSize = 0.0
 	}
