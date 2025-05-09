@@ -89,11 +89,11 @@ type SignalThresholds struct {
 
 // StorageConfig настройки хранения данных
 type StorageConfig struct {
-	Type     string `yaml:"type"`
-	URL      string `yaml:"url"`
-	Username string `yaml:"username"`
-	Password string `yaml:"password"`
-	Database string `yaml:"database"`
+	Type         string `yaml:"type"`
+	URL          string `yaml:"url"`
+	Token        string `yaml:"token"`
+	Organization string `yaml:"organization"`
+	Bucket       string `yaml:"bucket"`
 }
 
 // UIConfig настройки пользовательского интерфейса

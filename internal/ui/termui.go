@@ -42,17 +42,27 @@ func NewTermUI(cfg config.UIConfig, analyzer *aggregator.Analyzer) (*TermUI, err
 	signalsTable.SetCell(0, 5, tview.NewTableCell("Время").SetSelectable(false).SetAttributes(tcell.AttrBold))
 
 	// Подробности сигнала
-	detailsView := tview.NewTextView().
-		SetDynamicColors(true).
-		SetBorder(true).
-		SetTitle("Детали сигнала")
+	detailsView := tview.NewTextView()
+	detailsView.SetDynamicColors(true)
+	detailsView.SetBorder(true)
+	detailsView.SetTitle("Детали сигнала")
 
 	// Лог событий
-	logsView := tview.NewTextView().
-		SetScrollable(true).
-		SetDynamicColors(true).
-		SetBorder(true).
-		SetTitle("Журнал событий")
+	logsView := tview.NewTextView()
+	logsView.SetScrollable(true)
+	logsView.SetDynamicColors(true)
+	logsView.SetBorder(true)
+	logsView.SetTitle("Журнал событий")
+
+	ui := &TermUI{
+    app:          app,
+    analyzer:     analyzer,
+    signalsTable: signalsTable,
+    detailsView:  detailsView,
+    logsView:     logsView,
+    signals:      make(map[string]*models.SignalResult),
+    config:       cfg,
+}
 
 	// Главный layout
 	flex := tview.NewFlex().
@@ -76,15 +86,6 @@ func NewTermUI(cfg config.UIConfig, analyzer *aggregator.Analyzer) (*TermUI, err
 		ui.updateDetailsView(symbol)
 	})
 
-	ui := &TermUI{
-		app:          app,
-		analyzer:     analyzer,
-		signalsTable: signalsTable,
-		detailsView:  detailsView,
-		logsView:     logsView,
-		signals:      make(map[string]*models.SignalResult),
-		config:       cfg,
-	}
 
 	app.SetRoot(flex, true).EnableMouse(true)
 

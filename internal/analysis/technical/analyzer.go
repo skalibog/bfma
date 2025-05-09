@@ -1,3 +1,4 @@
+// analysis/technical/analyzer.go
 package technical
 
 import (
@@ -223,9 +224,8 @@ func (a *Analyzer) calculateIchimoku(highs, lows, closes []float64) float64 {
 		if lastSenkouA > lastSenkouB {
 			signal += 20
 		}
-	}
-	// Цена ниже облака: медвежий сигнал
-	else if lastClose < math.Min(lastSenkouA, lastSenkouB) {
+	} else if lastClose < math.Min(lastSenkouA, lastSenkouB) {
+		// Цена ниже облака: медвежий сигнал
 		signal = -50
 
 		// Дополнительная сила, если Tenkan ниже Kijun (медвежий кросс)
@@ -237,9 +237,8 @@ func (a *Analyzer) calculateIchimoku(highs, lows, closes []float64) float64 {
 		if lastSenkouA < lastSenkouB {
 			signal -= 20
 		}
-	}
-	// Цена внутри облака: слабый сигнал или неопределенность
-	else {
+	} else {
+		// Цена внутри облака: слабый сигнал или неопределенность
 		// Направление определяется положением Tenkan относительно Kijun
 		if lastTenkan > lastKijun {
 			signal = 25

@@ -22,6 +22,18 @@ func main() {
 	configPath := flag.String("config", "config.yaml", "путь к файлу конфигурации")
 	flag.Parse()
 
+    // Проверяем наличие файла конфигурации
+    fmt.Println("Проверяем наличие файла конфигурации...")
+    if _, err := os.Stat(*configPath); os.IsNotExist(err) {
+        log.Fatalf("Файл конфигурации не найден: %s", *configPath)
+    }
+
+    // Проверяем наличие необходимых прав доступа
+    _, err := os.Stat(*configPath)
+    if err != nil {
+        log.Fatalf("Ошибка доступа к файлу конфигурации: %v", err)
+    }
+
 	// Загружаем конфигурацию
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -101,3 +113,4 @@ func main() {
 	cancel()
 	time.Sleep(time.Second) // Даем горутинам время на завершение
 }
+
