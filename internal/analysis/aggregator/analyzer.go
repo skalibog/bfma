@@ -94,30 +94,36 @@ func (a *Analyzer) generateSignalForSymbol(ctx context.Context, symbol string) (
 	go func() {
 		defer wg.Done()
 		technicalSignal, technicalErr = a.technicalAnal.Analyze(ctx, a.storage, symbol, interval)
+		logger.Debug("AGGREGATOR: Технический анализ завершен", zap.String("symbol", symbol), zap.Float64("signal", technicalSignal))
+
 	}()
 
 	// Анализ стакана
 	go func() {
 		defer wg.Done()
 		orderbookSignal, orderbookErr = a.orderbookAnal.Analyze(ctx, a.storage, symbol)
+		logger.Debug("AGGREGATOR: Анализ стакана завершен", zap.String("symbol", symbol), zap.Float64("signal", orderbookSignal))
 	}()
 
 	// Анализ ставок финансирования
 	go func() {
 		defer wg.Done()
 		fundingSignal, fundingErr = a.fundingAnal.Analyze(ctx, a.storage, symbol)
+		logger.Debug("AGGREGATOR: Анализ ставок финансирования завершен", zap.String("symbol", symbol), zap.Float64("signal", fundingSignal))
 	}()
 
 	// Анализ открытого интереса
 	go func() {
 		defer wg.Done()
 		oiSignal, oiErr = a.oiAnal.Analyze(ctx, a.storage, symbol)
+		logger.Debug("AGGREGATOR: Анализ открытого интереса завершен", zap.String("symbol", symbol), zap.Float64("signal", oiSignal))
 	}()
 
 	// Анализ дельты объемов
 	go func() {
 		defer wg.Done()
 		volumeDeltaSignal, volumeDeltaErr = a.volumeDeltaAnal.Analyze(ctx, a.storage, symbol)
+		logger.Debug("AGGREGATOR: Анализ дельты объемов завершен", zap.String("symbol", symbol), zap.Float64("signal", volumeDeltaSignal))
 	}()
 
 	wg.Wait()

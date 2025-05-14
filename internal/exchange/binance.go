@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"go.uber.org/zap"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -217,28 +216,56 @@ func NewCandleCollector(client *BinanceClient, storage storage.Storage, symbols 
 
 // Start запускает сборщик данных
 func (c *CandleCollector) Start(ctx context.Context) error {
+	logger.Info("Запуск сборщика свечей",
+		zap.Strings("symbols", c.symbols),
+		zap.String("interval", c.interval))
+
 	// Загружаем исторические данные
 	for _, symbol := range c.symbols {
-		candles, err := c.client.GetKlines(ctx, symbol, c.interval, 100)
+		logger.Info("Загрузка исторических свечей",
+			zap.String("symbol", symbol),
+			zap.String("interval", c.interval),
+			zap.Int("limit", 1000)) // Увеличил лимит до 1000
+
+		candles, err := c.client.GetKlines(ctx, symbol, c.interval, 500) // Увеличил до 1000
 		if err != nil {
+			logger.Error("Ошибка загрузки исторических свечей",
+				zap.String("symbol", symbol),
+				zap.Error(err))
 			return fmt.Errorf("ошибка загрузки исторических свечей для %s: %w", symbol, err)
 		}
 
+		logger.Info("Получены исторические свечи",
+			zap.String("symbol", symbol),
+			zap.Int("count", len(candles)))
+
 		if err := c.storage.SaveCandles(ctx, candles); err != nil {
+			logger.Error("Ошибка сохранения исторических свечей",
+				zap.String("symbol", symbol),
+				zap.Error(err))
 			return fmt.Errorf("ошибка сохранения исторических свечей для %s: %w", symbol, err)
 		}
+
+		logger.Info("Исторические свечи сохранены",
+			zap.String("symbol", symbol),
+			zap.Int("count", len(candles)))
 	}
 
 	// Подписываемся на обновления свечей через WebSocket
 	for _, symbol := range c.symbols {
 		wsKlineHandler := func(event *futures.WsKlineEvent) {
+			logger.Debug("Получено WS событие свечи",
+				zap.String("symbol", symbol),
+				zap.Time("time", time.Now()),
+				zap.String("interval", c.interval),
+				zap.Bool("is_final", event.Kline.IsFinal))
 			k := event.Kline
 
 			// Преобразуем строковые значения в float64
 			open, _ := strconv.ParseFloat(k.Open, 64)
 			high, _ := strconv.ParseFloat(k.High, 64)
 			low, _ := strconv.ParseFloat(k.Low, 64)
-			close, _ := strconv.ParseFloat(k.Close, 64)
+			closes, _ := strconv.ParseFloat(k.Close, 64)
 			volume, _ := strconv.ParseFloat(k.Volume, 64)
 
 			candle := &models.Candle{
@@ -248,12 +275,12 @@ func (c *CandleCollector) Start(ctx context.Context) error {
 				Open:      open,
 				High:      high,
 				Low:       low,
-				Close:     close,
+				Close:     closes,
 				Volume:    volume,
 				CloseTime: time.Unix(k.EndTime/1000, 0),
 			}
 
-			c.storage.SaveCandle(context.Background(), candle)
+			c.storage.SaveCandle(ctx, candle)
 		}
 
 		errHandler := func(err error) {
@@ -300,70 +327,68 @@ func NewOrderBookCollector(client *BinanceClient, storage storage.Storage, symbo
 
 // Start запускает сборщик данных
 func (c *OrderBookCollector) Start(ctx context.Context) error {
-	// Создаем структуры для хранения каналов
-	c.doneChannels = make([]chan struct{}, 0, len(c.symbols))
-	c.stopChannels = make([]chan struct{}, 0, len(c.symbols))
-
-	// Загружаем текущий стакан
+	// Загружаем начальный стакан через REST API
 	for _, symbol := range c.symbols {
 		orderBook, err := c.client.GetOrderBook(ctx, symbol, c.depth)
 		if err != nil {
-			return fmt.Errorf("ошибка загрузки стакана для %s: %w", symbol, err)
+			logger.Error("Ошибка загрузки стакана", zap.Error(err))
+			continue // Продолжаем с другими символами вместо полной остановки
+		}
+		c.storage.SaveOrderBook(ctx, orderBook)
+	}
+
+	// Используем один обработчик для всех символов
+	handler := func(event *futures.WsDepthEvent) {
+		symbol := event.Symbol // Получаем символ из события
+
+		logger.Debug("Получено WS событие стакана",
+			zap.String("symbol", symbol),
+			zap.Time("time", time.Now()),
+			zap.Int("depth", c.depth))
+
+		// Создаем объект стакана и сохраняем
+		orderBook := &models.OrderBook{
+			Symbol:    symbol,
+			Timestamp: time.Now(),
+			Bids:      make([]models.OrderBookLevel, len(event.Bids)),
+			Asks:      make([]models.OrderBookLevel, len(event.Asks)),
 		}
 
+		// Заполняем данными
+		for i, bid := range event.Bids {
+			orderBook.Bids[i] = models.OrderBookLevel{
+				Price:  bid.Price,
+				Amount: bid.Quantity,
+			}
+		}
+		for i, ask := range event.Asks {
+			orderBook.Asks[i] = models.OrderBookLevel{
+				Price:  ask.Price,
+				Amount: ask.Quantity,
+			}
+		}
+
+		// Сохраняем в базу
 		if err := c.storage.SaveOrderBook(ctx, orderBook); err != nil {
-			return fmt.Errorf("ошибка сохранения стакана для %s: %w", symbol, err)
+			logger.Error("Ошибка сохранения стакана",
+				zap.String("symbol", symbol), zap.Error(err))
 		}
 	}
 
-	// Подписка на WebSocket-обновления
-	for _, symbol := range c.symbols {
-		symbol := symbol // Локальная копия для горутины
-
-		handler := func(event *futures.WsDepthEvent) {
-			// Создаем новый объект стакана
-			orderBook := &models.OrderBook{
-				Symbol:    symbol,
-				Timestamp: time.Now(),
-				Bids:      make([]models.OrderBookLevel, len(event.Bids)),
-				Asks:      make([]models.OrderBookLevel, len(event.Asks)),
-			}
-
-			// Обрабатываем биды
-			for i, bid := range event.Bids {
-				orderBook.Bids[i] = models.OrderBookLevel{
-					Price:  bid.Price,
-					Amount: bid.Quantity,
-				}
-			}
-
-			// Обрабатываем аски
-			for i, ask := range event.Asks {
-				orderBook.Asks[i] = models.OrderBookLevel{
-					Price:  ask.Price,
-					Amount: ask.Quantity,
-				}
-			}
-
-			// Сохраняем обновленный стакан
-			c.storage.SaveOrderBook(context.Background(), orderBook)
-		}
-
-		errHandler := func(err error) {
-			log.Printf("Ошибка WebSocket для стакана %s: %v", symbol, err)
-		}
-
-		doneC, stopC, err := futures.WsDiffDepthServe(symbol, handler, errHandler)
-		if err != nil {
-			return fmt.Errorf("ошибка подписки на WebSocket для %s: %w", symbol, err)
-		}
-
-		// Добавляем каналы в слайсы
-		c.doneChannels = append(c.doneChannels, doneC)
-		c.stopChannels = append(c.stopChannels, stopC)
+	errHandler := func(err error) {
+		logger.Error("Ошибка WebSocket", zap.Error(err))
+		// Просто логируем ошибку и продолжаем работу
+	}
+	symbolsMap := make(map[string]string)
+	for _, sym := range c.symbols {
+		// Для Binance API нужен формат "symbol@depth"
+		symbolsMap[sym] = sym + "@depth"
 	}
 
-	return nil
+	logger.Info("Подписка на WebSocket для стакана", zap.Any("symbols", symbolsMap))
+	_, _, err := futures.WsCombinedDepthServe(symbolsMap, handler, errHandler)
+
+	return err
 }
 
 // Stop останавливает сборщик данных
@@ -409,21 +434,25 @@ func (c *FundingRateCollector) Start(ctx context.Context) error {
 	}
 
 	// Запускаем периодическое обновление ставок финансирования
-	c.ticker = time.NewTicker(1 * time.Hour) // Обновляем каждый час
+	c.ticker = time.NewTicker(10 * time.Minute) // Обновляем каждый час
 
 	go func() {
 		for {
 			select {
 			case <-c.ticker.C:
 				for _, symbol := range c.symbols {
-					rate, err := c.client.GetFundingRate(context.Background(), symbol)
+					rate, err := c.client.GetFundingRate(ctx, symbol)
 					if err != nil {
-						fmt.Printf("Ошибка получения ставки финансирования для %s: %v\n", symbol, err)
+						logger.Error("Ошибка получения ставки финансирования",
+							zap.String("symbol", symbol),
+							zap.Error(err))
 						continue
 					}
 
-					if err := c.storage.SaveFundingRate(context.Background(), rate); err != nil {
-						fmt.Printf("Ошибка сохранения ставки финансирования для %s: %v\n", symbol, err)
+					if err := c.storage.SaveFundingRate(ctx, rate); err != nil {
+						logger.Error("Ошибка сохранения ставки финансирования",
+							zap.String("symbol", symbol),
+							zap.Error(err))
 					}
 				}
 			case <-c.done:

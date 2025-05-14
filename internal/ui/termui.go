@@ -149,7 +149,6 @@ func (ui *TermUI) UpdateSignals(signals map[string]*models.SignalResult) {
 	}
 }
 
-// Запись лога в файл
 func (ui *TermUI) loadLogsFromFile() error {
 	file, err := os.Open(ui.logFile)
 	if err != nil {

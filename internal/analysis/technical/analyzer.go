@@ -4,6 +4,8 @@ package technical
 import (
 	"context"
 	"fmt"
+	"github.com/skalibog/bfma/pkg/logger"
+	"go.uber.org/zap"
 	"math"
 
 	"github.com/markcheno/go-talib"
@@ -25,14 +27,27 @@ func NewAnalyzer(cfg config.TechnicalConfig) *Analyzer {
 
 // Analyze выполняет технический анализ для символа
 func (a *Analyzer) Analyze(ctx context.Context, storage storage.Storage, symbol, interval string) (float64, error) {
+	logger.Debug("Начало технического анализа",
+		zap.String("symbol", symbol),
+		zap.String("interval", interval))
+
 	// Получаем исторические свечи
 	candles, err := storage.GetCandles(ctx, symbol, interval, 100)
 	if err != nil {
+		logger.Error("Ошибка получения свечей технического анализа",
+			zap.String("symbol", symbol),
+			zap.Error(err))
 		return 0, fmt.Errorf("ошибка получения свечей: %w", err)
 	}
 
+	logger.Debug("Получены свечи для технического анализа",
+		zap.String("symbol", symbol),
+		zap.Int("count", len(candles)),
+		zap.Int("required", a.config.MACDSlow+a.config.MACDSignal))
+
 	if len(candles) < a.config.MACDSlow+a.config.MACDSignal {
-		return 0, fmt.Errorf("недостаточно данных для анализа: %d свечей", len(candles))
+		return 0, fmt.Errorf("недостаточно данных для технического анализа: %d свечей (требуется %d)",
+			len(candles), a.config.MACDSlow+a.config.MACDSignal)
 	}
 
 	// Подготавливаем данные для анализа
@@ -55,12 +70,24 @@ func (a *Analyzer) Analyze(ctx context.Context, storage storage.Storage, symbol,
 	ichimokuSignal := a.calculateIchimoku(highs, lows, closes)
 	atrSignal := a.calculateATR(highs, lows, closes)
 
+	logger.Debug("Промежуточные сигналы технического анализа",
+		zap.String("symbol", symbol),
+		zap.Float64("rsi_signal", rsiSignal),
+		zap.Float64("macd_signal", macdSignal),
+		zap.Float64("bb_signal", bbSignal),
+		zap.Float64("ichimoku_signal", ichimokuSignal),
+		zap.Float64("atr_signal", atrSignal))
+
 	// Комбинируем сигналы с весами
 	weightedSignal := (rsiSignal * 0.25) +
 		(macdSignal * 0.25) +
 		(bbSignal * 0.2) +
 		(ichimokuSignal * 0.2) +
 		(atrSignal * 0.1)
+
+	logger.Info("Технический анализ завершен",
+		zap.String("symbol", symbol),
+		zap.Float64("signal", weightedSignal))
 
 	return weightedSignal, nil
 }
@@ -122,7 +149,7 @@ func (a *Analyzer) calculateMACD(closes []float64) float64 {
 
 		// Определяем направление на основе положения MACD относительно сигнальной линии
 		if lastMACD > lastSignal {
-			signalStrength = normHist  // Положительный сигнал (покупка)
+			signalStrength = normHist // Положительный сигнал (покупка)
 		} else {
 			signalStrength = -normHist // Отрицательный сигнал (продажа)
 		}
@@ -164,10 +191,10 @@ func (a *Analyzer) calculateBollingerBands(closes []float64) float64 {
 		signal = 100
 	} else if percentB > 0.8 {
 		// Цена близка к верхней полосе: умеренный сигнал на продажу
-		signal = -80 * bandwidth  // Сильнее, если полоса широкая
+		signal = -80 * bandwidth // Сильнее, если полоса широкая
 	} else if percentB < 0.2 {
 		// Цена близка к нижней полосе: умеренный сигнал на покупку
-		signal = 80 * bandwidth   // Сильнее, если полоса широкая
+		signal = 80 * bandwidth // Сильнее, если полоса широкая
 	} else {
 		// Цена в середине полосы: слабый сигнал
 		signal = (0.5 - percentB) * 100 * bandwidth

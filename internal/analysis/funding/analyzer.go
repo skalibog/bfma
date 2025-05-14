@@ -4,6 +4,8 @@ package funding
 import (
 	"context"
 	"fmt"
+	"github.com/skalibog/bfma/pkg/logger"
+	"go.uber.org/zap"
 	"math"
 	// "time"
 
@@ -26,6 +28,8 @@ func NewAnalyzer(cfg config.FundingConfig) *Analyzer {
 
 // Analyze анализирует ставки финансирования и возвращает сигнал от -100 до 100
 func (a *Analyzer) Analyze(ctx context.Context, storage storage.Storage, symbol string) (float64, error) {
+	logger.Info("Начало анализа ставок финансирования")
+
 	// Получаем историю ставок финансирования
 	fundingRates, err := storage.GetFundingRates(ctx, symbol, a.config.Periods)
 	if err != nil {
@@ -45,6 +49,18 @@ func (a *Analyzer) Analyze(ctx context.Context, storage storage.Storage, symbol 
 	weightedSignal := (extremeSignal * 0.4) +
 		(trendSignal * 0.4) +
 		(changeSignal * 0.2)
+	logger.Debug("Получены данные ставок финансирования",
+		zap.String("symbol", symbol),
+		zap.Int("data_count", len(fundingRates)),
+		zap.Int("candles_count", len(fundingRates)),
+		zap.Int("periods", a.config.Periods))
+
+	logger.Info("Анализ ставок финансирования завершен",
+		zap.String("symbol", symbol),
+		zap.Float64("extreme_signal", extremeSignal),
+		zap.Float64("trend_signal", trendSignal),
+		zap.Float64("change_signal", changeSignal),
+		zap.Float64("weighted_signal", weightedSignal))
 
 	return weightedSignal, nil
 }

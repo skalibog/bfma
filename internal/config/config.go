@@ -114,6 +114,8 @@ func Load(path string) (*Config, error) {
 		logger.Fatal("Ошибка разбора файла конфигурации", zap.Error(err))
 	}
 
+	logger.Debug("Загружена конфигурация", zap.String("path", path), zap.Any("config", config))
+
 	logger.Info("Загружена конфигурация", zap.Any("Symbols", config.Trading.Symbols))
 	return &config, nil
 }

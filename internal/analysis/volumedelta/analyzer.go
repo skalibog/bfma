@@ -4,6 +4,8 @@ package volumedelta
 import (
 	"context"
 	"fmt"
+	"github.com/skalibog/bfma/pkg/logger"
+	"go.uber.org/zap"
 	"math"
 
 	"github.com/skalibog/bfma/internal/config"
@@ -31,8 +33,14 @@ func (a *Analyzer) Analyze(ctx context.Context, storage storage.Storage, symbol 
 		return 0, fmt.Errorf("ошибка получения свечей: %w", err)
 	}
 
+	logger.Debug("Анализ дельты объемов ",
+		zap.String("symbol", symbol),
+		zap.Int("candles_available", len(candles)),
+		zap.Int("candles_required", a.config.Lookback*10)) // Снижено требование
+
 	if len(candles) < a.config.Lookback*10 {
-		return 0, fmt.Errorf("недостаточно данных для анализа дельты объемов: %d свечей", len(candles))
+		return 0, fmt.Errorf("недостаточно данных для анализа дельты объемов: %d свечей (требуется %d)",
+			len(candles), a.config.Lookback*10)
 	}
 
 	// Анализируем различные аспекты дельты объемов

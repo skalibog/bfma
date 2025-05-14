@@ -4,6 +4,8 @@ package oianalysis
 import (
 	"context"
 	"fmt"
+	"github.com/skalibog/bfma/pkg/logger"
+	"go.uber.org/zap"
 	"math"
 	"strconv"
 
@@ -26,6 +28,10 @@ func NewAnalyzer(cfg config.OpenInterestConfig) *Analyzer {
 
 // Analyze анализирует открытый интерес и возвращает сигнал от -100 до 100
 func (a *Analyzer) Analyze(ctx context.Context, storage storage.Storage, symbol string) (float64, error) {
+	logger.Debug("Анализ открытого интереса",
+		zap.String("symbol", symbol),
+		zap.Int("lookback", a.config.Lookback))
+
 	// Получаем историю открытого интереса
 	openInterest, err := storage.GetOpenInterest(ctx, symbol, a.config.Lookback)
 	if err != nil {
@@ -55,6 +61,13 @@ func (a *Analyzer) Analyze(ctx context.Context, storage storage.Storage, symbol 
 	weightedSignal := (changeSignal * 0.4) +
 		(divergenceSignal * 0.4) +
 		(trendSignal * 0.2)
+
+	logger.Debug("Получены данные OI открытого интереса",
+		zap.String("symbol", symbol),
+		zap.Int("data_count", len(openInterest)),
+		zap.Int("candles_count", len(candles)))
+
+	logger.Info("Анализ открытого интереса завершен", zap.String("symbol", symbol), zap.Float64("signal", weightedSignal))
 
 	return weightedSignal, nil
 }
@@ -137,26 +150,26 @@ func (a *Analyzer) analyzeOIvsPriceDivergence(openInterest []*models.OpenInteres
 
 	// Проверяем на дивергенцию
 	// Если направления трендов разные, это дивергенция
-	if priceSlope * oiSlope < 0 {
+	if priceSlope*oiSlope < 0 {
 		// Дивергенция обнаружена
 
 		// Цена растет, OI падает = потенциальное ослабление роста
 		if priceSlope > 0 && oiSlope < 0 {
 			// Сила сигнала основана на степени дивергенции
-			signal = -70 * math.Min(math.Abs(priceSlope * oiSlope * 1000), 1.0)
+			signal = -70 * math.Min(math.Abs(priceSlope*oiSlope*1000), 1.0)
 		} else if priceSlope < 0 && oiSlope > 0 {
 			// Цена падает, OI растет = потенциальное замедление падения
-			signal = 70 * math.Min(math.Abs(priceSlope * oiSlope * 1000), 1.0)
+			signal = 70 * math.Min(math.Abs(priceSlope*oiSlope*1000), 1.0)
 		}
 	} else {
 		// Нет дивергенции, тренды совпадают
 
 		// Если и цена, и OI растут = подтверждение роста
 		if priceSlope > 0 && oiSlope > 0 {
-			signal = 40 * math.Min(priceSlope * oiSlope * 1000, 1.0)
+			signal = 40 * math.Min(priceSlope*oiSlope*1000, 1.0)
 		} else if priceSlope < 0 && oiSlope < 0 {
 			// Если и цена, и OI падают = подтверждение падения
-			signal = -40 * math.Min(math.Abs(priceSlope * oiSlope * 1000), 1.0)
+			signal = -40 * math.Min(math.Abs(priceSlope*oiSlope*1000), 1.0)
 		}
 	}
 
